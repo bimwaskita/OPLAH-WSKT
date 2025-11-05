@@ -1,15 +1,6 @@
 """
-Generate a CSV of image files from a local folder (recursive).
-Output CSV columns: nama_proyek, periode, nama_di, nama_gambar, url
-
-Usage:
-  python link-list.py [path/to/folder]
-  If no path provided, scans all Oplah folders in current directory
-"""nerate a CSV of image files from a local folder (recursive).
-Output CSV columns: folder, subfolder, subfolder, nama gambar, url (raw.githubusercontent.com)
-
-Usage:
-  python link-list.py path/to/folder
+Generate a CSV of image files from local folders with GitHub raw URLs.
+Output columns: nama_proyek, periode, nama_di, nama_gambar, url
 """
 
 import csv
@@ -37,9 +28,6 @@ def get_git_info() -> Tuple[str, str, str]:
         ).strip()
         
         # Extract owner/repo from remote URL
-        # Handle both HTTPS and SSH formats:
-        # https://github.com/owner/repo.git
-        # git@github.com:owner/repo.git
         if "github.com" not in remote:
             raise ValueError("Not a GitHub repository")
             
@@ -60,17 +48,57 @@ def get_git_info() -> Tuple[str, str, str]:
         return owner, repo, branch
     except subprocess.CalledProcessError:
         raise ValueError("Not in a git repository or git not installed")
-        
+
+
 def encode_path(path: str) -> str:
     """Encode spaces in path with %20."""
     parts = path.split('/')
     encoded_parts = [part.replace(' ', '%20') for part in parts]
     return '/'.join(encoded_parts)
 
+
 def make_github_url(owner: str, repo: str, branch: str, path: str) -> str:
     """Generate raw.githubusercontent.com URL for a file with properly encoded spaces."""
-    encoded_path = encode_path(path)
+    encoded_path = encode_path(path)  # path already includes ./
     return f"https://raw.githubusercontent.com/{owner}/{repo}/refs/heads/{branch}/{encoded_path}"
+
+
+def clean_folder_name(name: str) -> str:
+    """Clean up folder names by removing numbering prefixes."""
+    # Remove numbering like "1. " or "1. M3" from DI folder names
+    if '. ' in name and name[0].isdigit():
+        name = name.split('. ', 1)[1]
+    return name
+
+def parse_path_info(path: str) -> Tuple[str, str, str, str]:
+    """Parse path into nama_proyek, periode, nama_di, and nama_gambar."""
+    parts = path.split('/')
+    
+    # Remove ./ prefix if present
+    if parts[0] == '.':
+        parts = parts[1:]
+    
+    # Handle files directly in project folder
+    if len(parts) == 2:
+        nama_proyek, nama_gambar = parts
+        return nama_proyek, "", "", path
+        
+    # Handle files in period folders (e.g., M3, M4)
+    if len(parts) == 3:
+        nama_proyek, periode, nama_gambar = parts
+        return nama_proyek, periode, "", path
+        
+    # Handle files in DI folders
+    nama_proyek = parts[0]  # First part is always project name
+    periode = parts[1]      # Second part is period (M3, M4, etc)
+    
+    # For DI name, we want the part after the period numbering
+    # Example: "1. M3 D.I Citasuk Banten Paket I" -> "D.I Citasuk Banten Paket I"
+    di_folder = parts[2]
+    nama_di = clean_folder_name(di_folder)
+    
+    return nama_proyek, periode, nama_di, path
+
 
 def list_images(root_path: str) -> List[str]:
     """Return all image file paths under root_path recursively."""
@@ -81,36 +109,10 @@ def list_images(root_path: str) -> List[str]:
                 # Get path relative to root_path
                 full = os.path.join(dirpath, f)
                 rel = os.path.relpath(full, root_path)
-                # Convert Windows path separators to forward slashes for URLs
+                # Convert Windows path separators to forward slashes
                 rel = rel.replace(os.sep, "/")
                 image_paths.append(rel)
     return sorted(image_paths)
-def row_from_path(path: str) -> List[str]:
-    """Extract project name, period (M3, etc), DI name, and filename from path."""
-    parts = path.split(os.sep)
-    if not parts:
-        return ["", "", "", "", ""]
-
-    # Get the project name (first folder)
-    project_name = parts[0] if len(parts) > 0 else ""
-    
-    # Get the period (M3, M4, etc) - should be second part
-    period = parts[1] if len(parts) > 1 else ""
-    
-    # Get DI name - should be in the folder name after M3/M4/etc
-    # Often in format like "1. M3 D.I Citasuk Banten Paket I"
-    di_name = ""
-    if len(parts) > 2:
-        folder_name = parts[2]
-        # Extract D.I name if present
-        if "D.I" in folder_name:
-            di_start = folder_name.find("D.I")
-            di_name = folder_name[di_start:].split("/")[0].strip()
-    
-    # Full relative path as image name
-    image_path = "./"+path
-    
-    return [project_name, period, di_name, image_path]
 
 
 def scan_current_directory() -> list[str]:
@@ -120,6 +122,7 @@ def scan_current_directory() -> list[str]:
         if os.path.isdir(item) and item.startswith("Oplah"):
             folders.append(item)
     return sorted(folders)
+
 
 def main(argv: list[str] | None = None) -> int:
     if not argv:
@@ -142,57 +145,53 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Warning: Folder not found: {folder}")
                 continue
             files = list_images(folder)
-            # Prepend folder name to each file
-            files = [f"{folder}/{f}" for f in files]
+            # Prepend ./ and folder name to each file
+            files = [f"./{folder}/{f}" for f in files]
             all_files.extend(files)
             
-        folder_path = "."  # Current directory
         files = all_files
     else:
         folder_path = argv[0]
         if not os.path.isdir(folder_path):
             print(f"Error: Folder not found: {folder_path}", file=sys.stderr)
             return 2
-        files = [f"{folder_path}/{f}" for f in list_images(folder_path)]
+        files = [f"./{folder_path}/{f}" for f in list_images(folder_path)]
     
+    # Get GitHub info for URLs
+    try:
+        owner, repo, branch = get_git_info()
+        print(f"Found GitHub repo: {owner}/{repo} @ {branch}")
+    except ValueError as e:
+        print(f"Warning: {e}")
+        print("URLs will not be generated")
+        owner = repo = branch = None
+
     out_file = "images.csv"
     
-    try:
-        # Get GitHub repo info first
-        try:
-            owner, repo, branch = get_git_info()
-            print(f"Found GitHub repo: {owner}/{repo} @ {branch}")
-        except ValueError as e:
-            print(f"Warning: {e}")
-            print("URLs will not be generated")
-            owner = repo = branch = None
-        
-        # Encode the root folder path for URL
-        encoded_root = folder_path.replace(" ", "%20")
-        files = list_images(folder_path)
-        # Prepend the encoded root folder to all files
-        files = [f"{encoded_root}/{f}" for f in files]
-    except Exception as e:
-        print(f"Error scanning folder: {e}", file=sys.stderr)
-        return 3
-
     if not files:
         print("No image files found.")
         return 0
 
     with open(out_file, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["folder", "subfolder", "subfolder", "nama gambar", "url"])
-        for pth in files:
-            row = row_from_path(pth)
+        writer.writerow(["nama_proyek", "periode", "nama_di", "nama_gambar", "url"])
+        for path in files:
+            nama_proyek, periode, nama_di, nama_gambar = parse_path_info(path)
             if owner and repo and branch:
-                url = make_github_url(owner, repo, branch, pth)
-                row.append(url)
+                url = make_github_url(owner, repo, branch, path)
             else:
-                row.append("")  # Empty URL if not in git repo
-            writer.writerow(row)
+                url = ""
+            writer.writerow([
+                nama_proyek,
+                periode,
+                nama_di,
+                nama_gambar,
+                url
+            ])
 
     print(f"Wrote {len(files)} rows to {out_file}")
     return 0
+
+
 if __name__ == "__main__":
-	raise SystemExit(main())
+    raise SystemExit(main())
